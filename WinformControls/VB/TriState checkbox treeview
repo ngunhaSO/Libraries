@@ -1,0 +1,122 @@
+  '==========================================================
+    '=                                                        =
+    '=      Get the x coordinate of the treeview at mouse     =
+    '=                                                        =
+    '==========================================================
+    Private Sub tvCrashType_MouseMove(sender As Object, e As MouseEventArgs) Handles tvCrashType.MouseMove
+        treeX = e.X
+    End Sub
+
+    '===========================================================================
+    '=                                                                         =
+    '=      do not expand the treeview if the x coordinate is out of bound     =
+    '=                                                                         =
+    '===========================================================================
+    Private Sub tvCrashType_BeforeExpand(sender As Object, e As TreeViewCancelEventArgs) Handles tvCrashType.BeforeExpand
+        If treeX > e.Node.Bounds.Left Then
+            e.Cancel = True
+        End If
+    End Sub
+
+    '====================================================================================================================
+    '=                                                                                                                  =
+    '=      Handle click event on treeview.                                                                             =
+    '=      Manipulate the dictionary accordingly to the node that being checked                                        =
+    '=      Assign ImageIndex accordingly to the node that being checked                                                =
+    '=      Chekc parent node if all children nodes are checked                                                         =
+    '=      Finally, update the user selected crash types, crash types sub category and total crash                     =                                                                                    =
+    '=                                                                                                                  =
+    '====================================================================================================================
+    Private Sub tvCrashType_NodeMouseClick(sender As Object, e As TreeNodeMouseClickEventArgs) Handles tvCrashType.NodeMouseClick
+        If e.Node.Parent IsNot Nothing Then
+            Dim n As TreeNode = e.Node
+            n.Checked = Not n.Checked
+            If n.Checked Then
+                n.ImageIndex = 0
+                n.SelectedImageIndex = n.ImageIndex
+                'only perform adding if check is true
+                Dim existing As List(Of CrashTypeSubCategory)
+                If Not crashTypeDictionary.TryGetValue(CType(n.Parent.Tag, CrashType), existing) Then
+                    existing = New List(Of CrashTypeSubCategory)
+                    crashTypeDictionary(CType(n.Parent.Tag, CrashType)) = existing
+                End If
+                If Not existing.Contains(CType(n.Tag, CrashTypeSubCategory)) Then
+                    existing.Add(CType(n.Tag, CrashTypeSubCategory))
+                End If
+            Else
+                n.ImageIndex = 1
+                n.SelectedImageIndex = n.ImageIndex
+                If n.Parent Is Nothing Then
+                    Dim key As CrashType = CType(n.Tag, CrashType)
+                    crashTypeDictionary.Remove(key)
+                Else
+                    Dim key As CrashType = CType(n.Parent.Tag, CrashType)
+                    Dim tmp As New List(Of CrashTypeSubCategory)
+                    If crashTypeDictionary.ContainsKey(key) Then
+                        tmp = crashTypeDictionary(key)
+                        If tmp.Contains(CType(n.Tag, CrashTypeSubCategory)) Then
+                            tmp.Remove(CType(n.Tag, CrashTypeSubCategory)) 'remove the value from the key
+                        End If
+                    End If
+                    'perform extra step, remove the key out
+                    If crashTypeDictionary.ContainsKey(key) Then
+                        Dim valueList As New List(Of CrashTypeSubCategory)
+                        valueList = crashTypeDictionary(key)
+                        If valueList.Contains(CType(n.Tag, CrashTypeSubCategory)) Then
+                            valueList.Remove(CType(n.Tag, CrashTypeSubCategory))
+                        End If
+                        If valueList.Count = 0 Then
+                            crashTypeDictionary.Remove(key)
+                        End If
+                    End If
+                End If
+            End If
+            checkParentNode()
+        Else
+            If e.X >= e.Node.Bounds.Left - imgListTreeView.Images(0).Width Then
+                Dim hasTrue As Boolean = False
+                For Each child As TreeNode In e.Node.Nodes
+                    If child.Checked Then
+                        hasTrue = True
+                        Exit For
+                    End If
+                Next
+                If hasTrue Then
+                    e.Node.ImageIndex = 1
+                    e.Node.SelectedImageIndex = e.Node.ImageIndex
+                    Dim key As CrashType = CType(e.Node.Tag, CrashType)
+                    If crashTypeDictionary.ContainsKey(key) Then
+                        Dim valueList As New List(Of CrashTypeSubCategory)
+                        valueList = crashTypeDictionary(key)
+                        For Each cNode As TreeNode In e.Node.Nodes
+                            If valueList.Contains(CType(cNode.Tag, CrashTypeSubCategory)) Then
+                                valueList.Remove(CType(cNode.Tag, CrashTypeSubCategory))
+                            End If
+                            If valueList.Count = 0 Then
+                                crashTypeDictionary.Remove(key)
+                            End If
+                        Next
+                    End If
+                Else
+                    e.Node.ImageIndex = 0
+                    e.Node.SelectedImageIndex = e.Node.ImageIndex
+                    Dim existing As New List(Of CrashTypeSubCategory)
+                    If Not crashTypeDictionary.TryGetValue(CType(e.Node.Tag, CrashType), existing) Then
+                        existing = New List(Of CrashTypeSubCategory)
+                        crashTypeDictionary(CType(e.Node.Tag, CrashType)) = existing
+                    End If
+                    For Each cNode As TreeNode In e.Node.Nodes
+                        existing.Add(CType(cNode.Tag, CrashTypeSubCategory))
+                    Next
+                End If
+                For Each child As TreeNode In e.Node.Nodes
+                    child.ImageIndex = e.Node.ImageIndex
+                    child.SelectedImageIndex = child.ImageIndex
+                    If child.ImageIndex = 0 Then child.Checked = True Else child.Checked = False
+                Next
+            End If
+        End If
+        DisplayCrashType()
+        DisplayResult(GetQueryString())
+        DisplayResultStateWide(GetQueryStringStateWide())
+    End Sub

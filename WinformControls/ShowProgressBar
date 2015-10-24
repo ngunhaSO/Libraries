@@ -1,0 +1,1011 @@
+Imports MobClassLib
+Imports MobClassLib.BindingUtility
+Imports MobClassLib.MobilityData
+Imports System.Data.SqlClient
+Imports System.Collections.Generic
+
+Public Class frmSSPST_AddFacilityType
+
+    Private form As frmSSPSTFacilityType
+    Private planID As Integer
+    Private fromYear As String
+    Private toYear As String
+    Private whereClause As String
+    Private level As Integer 'this is the level get from right clicking the node on the tree view in Facility Type form, we need to raise by 1 in order to save into database
+    Private availableFacilityType As New List(Of FacilityType)
+    Private node As SSPSTFacilityNode
+    Private selectedSubCategory As New List(Of FacilityTypeSubCategory)
+    Private selectedSubCatArray As New List(Of List(Of FacilityTypeSubCategory))
+    Private queryString As String
+    Private totalCrash As String
+    Private totalCrashStateWide As String
+    Private editLevel As Boolean = False
+    Private errorMessage As New ToolTip()
+
+    Public Sub New(frm As frmSSPSTFacilityType, _
+                   fromYear As String, toYear As String, whereClause As String, _
+                   node As SSPSTFacilityNode, queryString As String _
+                   , isAdd As Boolean _
+                   , totalCrash As String _
+                   , totalCrashStateWide As String) 'removed these two params, don't appear to be needed--> planID As Integer, _, currentSelectedNode As SSPSTFacilityNode)
+        InitializeComponent()
+        Me.form = frm
+        Me.planID = node.PlanID
+        Me.whereClause = whereClause
+        Me.editLevel = Not isAdd
+        If Not editLevel Then Me.level = node.Level + 1 Else Me.level = node.Level
+        Me.node = node
+        Me.queryString = queryString
+        Me.totalCrash = totalCrash
+        Me.totalCrashStateWide = totalCrashStateWide
+        Dim tempFacility As New FacilityType(-1, "--Select Category")
+        availableFacilityType.Add(tempFacility)
+        RetrieveFacilities()
+        ShowCurrentPath()
+        InitBinding()
+        selectedSubCatArray.Add(selectedSubCategory)
+        AddHandler lstSelection1.DragEnter, AddressOf ListBox_DragEnter
+        AddHandler lstSelection1.DragDrop, AddressOf ListBox_DragDrop
+        AddHandler lstSelection1.MouseDown, AddressOf ListBox_MouseDown
+        AddHandler lstvSubCategory.DragEnter, AddressOf TreeView_DragEnter
+        AddHandler lstvSubCategory.DragDrop, AddressOf TreeView_DragDrop
+        workerGetData.WorkerReportsProgress = True
+        workerProgress.WorkerReportsProgress = True
+
+        'If editLevel Then LoadPreviousSelections()
+        
+    End Sub
+
+    Private Sub frmSSPST_AddFacilityType_Load(sender As Object, e As EventArgs) Handles Me.Load
+        If editLevel Then
+            AddHandler workerGetData.DoWork, AddressOf workerGetData_GetPrevious_DoWork
+            AddHandler workerGetData.RunWorkerCompleted, AddressOf workerGetData_GetPrevious_RunWorkerCompleted
+
+            workerProgress.RunWorkerAsync()
+            workerGetData.RunWorkerAsync()
+        End If
+    End Sub
+
+    'Public Sub New(node As SSPSTFacilityNode)
+    '    InitializeComponent()
+    '    MessageBox.Show(node.GroupID.ToString & " - " & node.PlanID.ToString)
+    'End Sub
+
+    Private Sub RetrieveFacilities()
+        Dim cmd As New SqlClient.SqlCommand
+        With cmd
+            .CommandText = "spSSPSTFacilityType_PopulateComboBox"
+            .CommandType = CommandType.StoredProcedure
+            .Connection = MobClassLib.MobilityData.MobilityConnection
+        End With
+
+        With cmd.Parameters
+            .AddWithValue("@PlanID", planID)
+            .AddWithValue("@GroupID", node.GroupID)
+        End With
+
+        If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+            MobClassLib.MobilityData.MobilityConnection.Open()
+        End If
+
+        Dim mydataReader As SqlDataReader
+        mydataReader = cmd.ExecuteReader()
+        Dim tempdataTable As New DataTable()
+        tempdataTable.Load(mydataReader)
+        Dim dv As DataView = tempdataTable.DefaultView
+        dv.Sort = "FacilityType asc"
+        Dim dataTable As New DataTable()
+        dataTable = dv.ToTable
+
+        For Each dr As DataRow In dataTable.Rows
+            Dim facility As New FacilityType(CType(dr("FacilityTypeID").ToString(), Integer), dr("FacilityType").ToString())
+            availableFacilityType.Add(facility)
+        Next
+        MobClassLib.MobilityData.MobilityConnection.Close()
+    End Sub
+
+    Private Sub ShowCurrentPath()
+        Dim cmd As New SqlClient.SqlCommand
+        With cmd
+            .CommandText = "spSSPSTDisplayCurrentPath"
+            .CommandType = CommandType.StoredProcedure
+            .Connection = MobClassLib.MobilityData.MobilityConnection
+        End With
+
+        With cmd.Parameters
+            .AddWithValue("@PlanID", planID)
+            .AddWithValue("@GroupID", node.GroupID)
+        End With
+
+        If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+            MobClassLib.MobilityData.MobilityConnection.Open()
+        End If
+
+        Dim mydataReader As SqlDataReader
+        mydataReader = cmd.ExecuteReader()
+        Dim tempdataTable As New DataTable()
+        tempdataTable.Load(mydataReader)
+        Dim dv As DataView = tempdataTable.DefaultView
+        Dim dataTable As New DataTable()
+        dataTable = dv.ToTable
+
+        For Each dr As DataRow In dataTable.Rows
+            lblShowPrevious.Text = dr("TreePath").ToString
+        Next
+        ToolTip1.SetToolTip(lblShowPrevious, lblShowPrevious.Text)
+        MobClassLib.MobilityData.MobilityConnection.Close()
+    End Sub
+
+    'binding combo box initially for available facility types
+    Private Sub InitBinding()
+        cbFacilityType.DataSource = availableFacilityType
+        cbFacilityType.DisplayMember = "FacilityType"
+        cbFacilityType.ValueMember = "ID"
+        cbFacilityType.SelectedIndex = 0
+    End Sub
+
+    Private selectedFacilityTypeID As Integer = 0
+    Private Sub cbFacilityType_SelectedIndexChanged(sender As Object, e As EventArgs) Handles cbFacilityType.SelectedIndexChanged
+        Dim cont As Boolean = True
+        If selectedSubCatArray.Count > 1 OrElse (selectedSubCatArray.Count = 1 AndAlso selectedSubCatArray.Item(0).Count > 0) Then
+            Dim res As DialogResult = MessageBox.Show("Changing the category will reset all current group selections.  Are you sure you want to change category?", "Continue?", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+            If res = Windows.Forms.DialogResult.No Then cont = False
+        End If
+
+        If cont AndAlso cbFacilityType.SelectedIndex > 0 Then
+            'selectedFacilityTypeID = CType(cbFacilityType.SelectedValue.ToString(), Integer)
+            'PopulateTreeView(selectedFacilityTypeID)
+
+            'For i As Integer = 1 To flowLayoutGroup.Controls.Count - 1
+            '    flowLayoutGroup.Controls.RemoveAt(i)
+            'Next
+
+            'txtGroupName1.Clear()
+            'lstSelection1.Items.Clear()
+            'selectedSubCategory.Clear()
+            'selectedSubCatArray.RemoveRange(1, selectedSubCatArray.Count - 1)
+
+            'totalGroup = 1
+
+            selectedFacilityTypeID = CType(cbFacilityType.SelectedValue.ToString(), Integer)
+
+            AddHandler workerGetData.DoWork, AddressOf workerGetData_GetSubCat_DoWork
+            AddHandler workerGetData.RunWorkerCompleted, AddressOf workerGetData_GetSubCat_RunWorkerCompleted
+
+            workerProgress.RunWorkerAsync()
+            workerGetData.RunWorkerAsync()
+
+        ElseIf Not cont Then
+            RemoveHandler cbFacilityType.SelectedIndexChanged, AddressOf cbFacilityType_SelectedIndexChanged
+
+            cbFacilityType.SelectedValue = selectedFacilityTypeID
+
+            AddHandler cbFacilityType.SelectedIndexChanged, AddressOf cbFacilityType_SelectedIndexChanged
+        End If
+    End Sub
+
+    'Private Sub PopulateTreeView(selectedFacilityTypeID As Integer)
+    '    lstvSubCategory.Items.Clear()
+    '    Dim cmdSelect As New SqlClient.SqlCommand
+    '    With cmdSelect
+    '        .CommandText = "spSSPSTFacilityTypePercent"
+    '        .CommandType = CommandType.StoredProcedure
+    '        .Connection = MobClassLib.MobilityData.MobilityConnection
+    '        .CommandTimeout = 0
+    '    End With
+
+    '    With cmdSelect.Parameters
+    '        .AddWithValue("@PlanID", planID)
+    '        .AddWithValue("@GroupID", node.GroupID) ' IIf(node.GroupID = -1, 0, node.GroupID))
+    '        .AddWithValue("@FacilityTypeID", selectedFacilityTypeID)
+    '        .AddWithValue("@PreviousWhereClause", Me.queryString)
+    '        .AddWithValue("@IsEdit", editLevel)
+    '    End With
+
+    '    If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+    '        MobClassLib.MobilityData.MobilityConnection.Open()
+    '    End If
+
+    '    Dim mydataReader As SqlDataReader
+    '    mydataReader = cmdSelect.ExecuteReader()
+    '    Dim tempdataTable As New DataTable()
+    '    tempdataTable.Load(mydataReader)
+    '    Dim dv As DataView = tempdataTable.DefaultView
+    '    If selectedFacilityTypeID = 5 Then
+
+    '    Else
+    '        dv.Sort = "SubCategory asc"
+    '    End If
+
+    '    Dim dataTable As New DataTable()
+    '    dataTable = dv.ToTable
+
+    '    For Each dr As DataRow In dataTable.Rows
+    '        'Dim childNode As New TreeNode(dr("SubCategory").ToString() & " - " & dr("TotalCrash").ToString() & "(" & dr("Percentage").ToString() & ")")
+    '        '
+    '        'Dim childNode As New TreeNode(dr("SubCategory").ToString() & " - " & dr("Result").ToString() & " crash(es)")
+    '        'Dim childNode As New TreeNode(dr("SubCategory").ToString() & " - " & dr("Result").ToString() & " (" & Format((CType((CType(dr("Result").ToString(), Integer) / CType(totalCrash, Integer)), Decimal) * 100), "0.00") & "%)")
+    '        Dim childNode As New ListViewItem(dr("SubCategory").ToString() & " - " & dr("Result").ToString() & " (" & Format((CType((CType(dr("Result").ToString(), Integer) / CType(totalCrash, Integer)), Decimal) * 100), "0.00") & "%)")
+    '        Dim subCategory As New FacilityTypeSubCategory(CType(dr("SubCategoryID").ToString(), Integer), dr("SubCategory").ToString(), dr("SourceColumn").ToString())
+    '        subCategory.SubCatValue = dr("SubCatValue").ToString()
+    '        subCategory.FacilityTypeID = CType(dr("FacilityTypeID").ToString(), Integer)
+    '        childNode.Tag = subCategory
+    '        lstvSubCategory.Items.Add(childNode)
+    '    Next
+    '    MobClassLib.MobilityData.MobilityConnection.Close()
+    'End Sub
+
+    '============== DRAG DROP FROM TREEVIEW TO LISTBOX ==============================
+#Region "Drag Drop"
+    Dim m_tnSource As ListViewItem
+    Private Sub tvFacilitySubCategory_ItemDrag(sender As Object, e As ItemDragEventArgs) Handles lstvSubCategory.ItemDrag
+        'm_tnSource = CType(e.Item, ListViewItem)
+        'If m_tnSource.BackColor = Color.Yellow Then
+        '    Return
+        'End If
+
+        DoDragDrop(CType(sender, ListView).SelectedItems, DragDropEffects.Copy)
+    End Sub
+
+    Private Sub tvFacilitySubCategory_DragOver(sender As Object, e As DragEventArgs) Handles lstvSubCategory.DragOver
+        e.Effect = DragDropEffects.Copy
+    End Sub
+
+    Private Sub ListBox_DragEnter(sender As Object, e As DragEventArgs)
+        e.Effect = DragDropEffects.Copy
+    End Sub
+
+    Private Sub ListBox_DragDrop(sender As Object, e As DragEventArgs)
+        Dim items As ListView.SelectedListViewItemCollection = CType(e.Data.GetData(GetType(ListView.SelectedListViewItemCollection)), ListView.SelectedListViewItemCollection)
+
+        If Not items Is Nothing AndAlso items.Count > 0 Then
+            Dim cbIndex As Integer
+            If cbFacilityType.SelectedIndex > 0 Then
+                cbIndex = CType(cbFacilityType.SelectedValue.ToString(), Integer)
+            End If
+            Dim lst As ListBox = CType(sender, ListBox)
+            'If Not m_tnSource Is Nothing Then
+            For Each vi As ListViewItem In items
+                Dim subCategory As FacilityTypeSubCategory = CType(vi.Tag, FacilityTypeSubCategory)
+                lst.DisplayMember = "SubCategory"
+                lst.Items.Add(subCategory)
+                selectedSubCatArray.Item(flowLayoutGroup.Controls.IndexOf(lst.Parent)).Add(subCategory)
+                vi.BackColor = Color.Yellow
+                If CType(lst.Parent.Controls.Find("txtGroupName" & lst.Name.Substring(12), True)(0), TextBox).Text = "" Then
+                    CType(lst.Parent.Controls.Find("txtGroupName" & lst.Name.Substring(12), True)(0), TextBox).Text = vi.Text.Remove(vi.Text.IndexOf(" - "))
+                End If
+
+                vi.Selected = False
+            Next
+
+            'Dim subCategory As FacilityTypeSubCategory = CType(m_tnSource.Tag, FacilityTypeSubCategory)
+            'lst.DisplayMember = "SubCategory"
+            'lst.Items.Add(subCategory)
+            'selectedSubCatArray.Item(flowLayoutGroup.Controls.IndexOf(lst.Parent)).Add(subCategory)
+            'm_tnSource.BackColor = Color.Yellow
+            'If CType(lst.Parent.Controls.Find("txtGroupName" & lst.Name.Substring(12), True)(0), TextBox).Text = "" Then
+            '    CType(lst.Parent.Controls.Find("txtGroupName" & lst.Name.Substring(12), True)(0), TextBox).Text = m_tnSource.Text.Remove(m_tnSource.Text.IndexOf(" - "))
+            'End If
+            'End If
+        End If
+
+
+        'm_tnSource = Nothing
+    End Sub
+#End Region
+    '============= END DRAG DROP FROM TREEVIEW TO LISTBOX ===========================
+
+    '============ DRAG DROP FROM LISTBOX BACK TO TREEVIEW ===========================
+    Dim m_SubCategory As FacilityTypeSubCategory
+    Private Sub ListBox_MouseDown(sender As Object, e As MouseEventArgs)
+        Dim lst As ListBox = CType(sender, ListBox)
+        Dim index As Integer = lst.IndexFromPoint(e.Location)
+        If index >= 0 Then
+            m_SubCategory = CType(lst.Items(index), FacilityTypeSubCategory)
+
+            Dim data As New ListBoxDoDragDropObject
+            data.List = lst
+            data.GroupIndex = CType(lst.Name.Substring(lst.Name.Length - 1), Integer)
+            data.SubCat = m_SubCategory
+
+
+            lst.DoDragDrop(data, DragDropEffects.Copy)
+            'lst.DoDragDrop(m_SubCategory, DragDropEffects.Copy)
+        End If
+    End Sub
+
+    Private Class ListBoxDoDragDropObject
+        Public Property List As ListBox
+        Public Property GroupIndex As Integer
+        Public Property SubCat As FacilityTypeSubCategory
+    End Class
+
+    Private Sub TreeView_DragEnter(sender As Object, e As DragEventArgs)
+        e.Effect = DragDropEffects.Copy
+    End Sub
+
+    Private Sub TreeView_DragDrop(sender As Object, e As DragEventArgs)
+        If Not m_SubCategory Is Nothing Then
+            For Each curNode As ListViewItem In lstvSubCategory.Items
+                Dim nodeText As String = curNode.Text.Substring(0, curNode.Text.IndexOf("-"))
+                If CType(curNode.Tag, FacilityTypeSubCategory).SubCategory.Equals(m_SubCategory.SubCategory) Then
+                    curNode.BackColor = Color.Empty
+
+                    Dim data As ListBoxDoDragDropObject = CType(e.Data.GetData(GetType(ListBoxDoDragDropObject)), ListBoxDoDragDropObject)
+
+                    If Not data Is Nothing Then
+                        Dim lst As ListBox = data.List
+                        Dim txt As TextBox = CType(flowLayoutGroup.Controls.Find("txtGroupName" & data.GroupIndex.ToString, True)(0), TextBox)
+                        lst.Items.Remove(data.SubCat)
+                        If lst.Items.Count < 1 Then
+                            txt.Text = String.Empty
+                        End If
+                        selectedSubCatArray.Item(flowLayoutGroup.Controls.IndexOf(lst.Parent)).Remove(data.SubCat)
+                    End If
+                End If
+            Next
+        End If
+    End Sub
+    '============ END DRAG DROP FROM LISTBOX BACK TO TREEVIEW ===========================
+
+
+    '============ VALIDATE THE FORM ====================================================
+    Dim _isValid As Boolean = True
+
+    Private Function IsValidGroup(pnl As Panel) As Boolean
+        IsValidGroup = True
+
+        For Each ctrl As Control In pnl.Controls
+            Select Case ctrl.GetType
+                Case GetType(Panel) 'recursivly check child panels
+                    If IsValidGroup Then IsValidGroup = Me.IsValidGroup(CType(ctrl, Panel))
+                Case GetType(TextBox) 'check if group has group name
+                    If CType(ctrl, TextBox).Text.Trim().Length > 0 Then
+                        ctrl.BackColor = Color.White
+                        errorMessage.SetToolTip(ctrl, "")
+                    Else
+                        IsValidGroup = False
+                        ctrl.BackColor = Color.Yellow
+                        errorMessage.SetToolTip(ctrl, "A group name is required")
+                    End If
+                Case GetType(ListBox) 'check if group has sub categories
+                    If CType(ctrl, ListBox).Items.Count > 0 Then
+                        ctrl.BackColor = Color.White
+                        errorMessage.SetToolTip(ctrl, "")
+                    Else
+                        _isValid = False
+                        ctrl.BackColor = Color.Yellow
+                        errorMessage.SetToolTip(ctrl, "Sub categories are required to make a group")
+                    End If
+            End Select
+        Next
+
+        Return IsValidGroup
+    End Function
+
+    Private Function isValid() As Boolean
+        _isValid = True
+
+        For Each pnl As Panel In flowLayoutGroup.Controls
+            If Not IsValidGroup(pnl) Then _isValid = False
+        Next
+
+        Return _isValid
+    End Function
+
+    Private Function RemovePanel(pnl As Panel) As Boolean
+        Dim _remove As Boolean = True
+
+        For Each child As Control In pnl.Controls
+            Select Case child.GetType
+                Case GetType(Panel) 'recursivly check child panels
+                    If _remove Then _remove = Me.RemovePanel(CType(child, Panel))
+                Case GetType(TextBox) 'check if group has group name
+                    If CType(child, TextBox).Text.Trim().Length > 0 Then _remove = False
+                Case GetType(ListBox) 'check if group has sub categories
+                    If CType(child, ListBox).Items.Count > 0 Then _remove = False
+            End Select
+        Next
+
+        Return _remove
+    End Function
+
+    Private Sub RemoveEmptyGroups()
+        Dim panelsToRemove As New List(Of Panel)
+
+        Dim firstGroup As Boolean = True
+
+        For Each pnl As Control In flowLayoutGroup.Controls
+            If pnl.GetType Is GetType(Panel) Then
+                If Not firstGroup Then 'never remove the first panel
+                    Dim removePanel As Boolean = Me.RemovePanel(CType(pnl, Panel))
+
+                    If removePanel Then
+                        panelsToRemove.Add(CType(pnl, Panel))
+                    End If
+                Else
+                    firstGroup = False
+                End If
+            End If
+
+        Next
+
+        'remove all groups that don't have 
+        For Each pnl As Panel In panelsToRemove
+            totalGroup -= 1
+            flowLayoutGroup.Controls.Remove(pnl)
+        Next
+    End Sub
+
+    '========== PERFORM SAVING TO DATABASE ==========================================
+    Private Sub btnSave_Click(sender As Object, e As EventArgs) Handles btnSave.Click
+        RemoveEmptyGroups()
+
+        If isValid() Then
+            For i As Integer = 1 To totalGroup
+                'form.onCallBack("txtGroupName" & i.ToString, GatherSelection(i))
+                GatherSelection(i)
+            Next
+
+            form.onCallBack()
+            'form.onCallBack(txtGroupName1.Text, GatherSelection()) 'callback
+            'form.onCallBack() 'callback
+            Me.Close()
+
+            'MessageBox.Show("is valid")
+        End If
+    End Sub
+
+    Private Function GatherSelection(grpIndex As Integer) As SSPSTFacilityNode
+        Dim children As List(Of FacilityTypeSubCategory) = selectedSubCatArray.Item(grpIndex - 1)
+        '===== Writing to SSPSTFacilityGroup
+        Dim group As FacilityGroup = AddGroup(grpIndex, children.Count)
+
+        If group IsNot Nothing Then
+            '===== Writing to SSPSTFacilityGroupSubCategory ====
+            AddGroupSubCategory(group, children)
+
+            '===== Writing to SSPSTTreeHierachy ========
+            AddTreeHierachy(group)
+
+            '============ after saving data into database, return the created node for callback
+            Dim node As New SSPSTFacilityNode(planID, flowLayoutGroup.Controls(grpIndex - 1).Controls(1).Text, level)
+            node.GroupID = group.GroupId
+            node.FacilityTypeID = selectedFacilityTypeID
+            Return node
+        End If
+
+        Return Nothing
+    End Function
+
+    Private Function AddGroup(grpIndex As Integer, NumberOfChildren As Integer) As FacilityGroup
+
+        Dim group As New FacilityGroup(flowLayoutGroup.Controls(grpIndex - 1).Controls.Find("txtGroupName" & grpIndex, True)(0).Text)
+
+        Dim tagObj As Object = flowLayoutGroup.Controls(grpIndex - 1).Controls.Find("lstSelection" & grpIndex, True)(0).Tag
+
+        'Dim group As New FacilityGroup(txtGroupName1.Text)
+        '======= Writing to SSPSTFacilityGroup ============
+        Dim groupId As Integer
+        If IsNumeric(tagObj) Then groupId = CType(tagObj, Integer) Else groupId = 0
+
+        If Not groupId > 0 AndAlso group.GroupName.Length > 0 AndAlso NumberOfChildren > 0 Then
+            Dim cmdInsert As New SqlCommand
+            With cmdInsert
+                .CommandText = "spSSPSTFacilityGroupInsert"
+                .CommandType = CommandType.StoredProcedure
+                .Connection = MobilityConnection
+            End With
+
+            With cmdInsert.Parameters
+                .Add("@ReturnValue", SqlDbType.Int).Direction = ParameterDirection.ReturnValue
+                .Add("@GroupID", SqlDbType.Int, 4, "GroupID").Direction = ParameterDirection.Output
+                .Add("@LicenseID", SqlDbType.Int).Value = MobClassLib.MobilityData.AdminUnitLicense
+                .AddWithValue("@GroupName", group.GroupName)
+            End With
+
+            If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+                MobClassLib.MobilityData.MobilityConnection.Open()
+            End If
+            cmdInsert.ExecuteNonQuery()
+            groupId = CType(cmdInsert.Parameters("@GroupID").Value.ToString(), Integer)
+            MobClassLib.MobilityData.MobilityConnection.Close()
+        ElseIf groupId > 0 AndAlso group.GroupName.Length > 0 AndAlso NumberOfChildren > 0 Then
+            Dim cmdInsert As New SqlCommand
+            With cmdInsert
+                .CommandText = "spSSPSTFacilityGroupUpdate"
+                .CommandType = CommandType.StoredProcedure
+                .Connection = MobilityConnection
+            End With
+
+            With cmdInsert.Parameters
+                .Add("@ReturnValue", SqlDbType.Int).Direction = ParameterDirection.ReturnValue
+                .AddWithValue("@GroupID", groupId)
+                .AddWithValue("@GroupName", group.GroupName)
+            End With
+
+            If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+                MobClassLib.MobilityData.MobilityConnection.Open()
+            End If
+            cmdInsert.ExecuteNonQuery()
+            MobClassLib.MobilityData.MobilityConnection.Close()
+        ElseIf groupId > 0 Then 'delete group
+            Dim cmdDelete As New SqlCommand
+            With cmdDelete
+                .CommandText = "spSSPSTFacilityGroupDelete"
+                .CommandType = CommandType.StoredProcedure
+                .Connection = MobilityConnection
+                .Parameters.AddWithValue("@GroupID", groupId)
+            End With
+
+            If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+                MobClassLib.MobilityData.MobilityConnection.Open()
+            End If
+            cmdDelete.ExecuteNonQuery()
+            MobClassLib.MobilityData.MobilityConnection.Close()
+
+            group = Nothing
+        End If
+        If Not group Is Nothing Then group.GroupId = groupId
+        Return group
+    End Function
+
+    Private Sub AddGroupSubCategory(group As FacilityGroup, subCategory As List(Of FacilityTypeSubCategory))
+        Dim cmdInsert As New SqlCommand
+
+        Dim groupSubCategoryId As Integer = 0
+
+        If editLevel Then
+            Dim cmdDelete As New SqlCommand
+            With cmdDelete
+                .CommandText = "spSSPSTFacilityGroupSubCategoryDeleteAll"
+                .CommandType = CommandType.StoredProcedure
+                .Connection = MobilityConnection
+            End With
+
+            With cmdDelete.Parameters
+                .Add("@ReturnValue", SqlDbType.Int).Direction = ParameterDirection.ReturnValue
+                .AddWithValue("@GroupID", group.GroupId)
+            End With
+
+            cmdDelete.Connection.Open()
+            cmdDelete.ExecuteNonQuery()
+            cmdDelete.Connection.Close()
+        End If
+
+        For Each sc As FacilityTypeSubCategory In subCategory
+            cmdInsert = New SqlCommand
+            With cmdInsert
+                .CommandText = "spSSPSTFacilityGroupSubCategoryInsert"
+                .CommandType = CommandType.StoredProcedure
+                .Connection = MobilityConnection
+            End With
+            With cmdInsert.Parameters
+                .AddWithValue("@GroupSubCategoryID", groupSubCategoryId)
+                .AddWithValue("@LicenseID", MobilityData.AdminUnitLicense)
+                .AddWithValue("@GroupID", group.GroupId)
+                .AddWithValue("@SubCategoryID", sc.SubCategoryID)
+            End With
+            If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+                MobClassLib.MobilityData.MobilityConnection.Open()
+            End If
+            cmdInsert.ExecuteNonQuery()
+        Next
+        MobClassLib.MobilityData.MobilityConnection.Close()
+    End Sub
+
+    Private Sub AddTreeHierachy(group As FacilityGroup)
+        'If Not editLevel Then
+        Dim parentGroupID As Integer = 0
+
+        Dim cmdInsert As New SqlCommand
+        With cmdInsert
+            .CommandText = "spSSPSTTreeHierarchyInsert"
+            .CommandType = CommandType.StoredProcedure
+            .Connection = MobilityConnection
+        End With
+
+        With cmdInsert.Parameters
+            .Add("@ReturnValue", SqlDbType.Int).Direction = ParameterDirection.ReturnValue
+            .Add("@TreeID", SqlDbType.Int, 4, "TreeID").Direction = ParameterDirection.Output
+            .AddWithValue("@PlanID", planID)
+            .AddWithValue("@GroupID", group.GroupId)
+            If Me.level <> 0 Then
+                If editLevel Then
+                    .AddWithValue("@ParentGroupID", node.ParentGroupID)
+                Else
+                    .AddWithValue("@ParentGroupID", node.GroupID)
+                End If
+
+            Else
+                .AddWithValue("@ParentGroupID", DBNull.Value)
+            End If
+            .AddWithValue("@LevelNumber", Me.level)
+            .Add("@LicenseID", SqlDbType.Int).Value = MobClassLib.MobilityData.AdminUnitLicense
+        End With
+
+        If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+            MobClassLib.MobilityData.MobilityConnection.Open()
+        End If
+
+        cmdInsert.ExecuteNonQuery()
+        MobClassLib.MobilityData.MobilityConnection.Close()
+        'End If
+
+    End Sub
+
+    Private Sub btnDeleteAll_Click(sender As Object, e As EventArgs)
+
+    End Sub
+
+
+    '========================= ADDING MORE GROUP CONTROLS TO FORM =========================================
+    Dim totalGroup As Integer = 1
+    Private Sub btnAddNewGroup_Click(sender As Object, e As EventArgs)
+        AddMoreGroup()
+        selectedSubCatArray.Add(New List(Of FacilityTypeSubCategory))
+    End Sub
+
+    Private Sub AddMoreGroup()
+        totalGroup = totalGroup + 1
+
+        Dim panelGroupName As New Panel
+        With panelGroupName
+            .Name = "pnlGroupName" & totalGroup
+            .Width = pnlGroupName1.Width
+            .Height = pnlGroupName1.Height
+            .Font = pnlGroupName1.Font
+            .Dock = pnlGroupName1.Dock
+        End With
+
+        Dim panel As Panel = New Panel
+        panel.Name = "panelGroup" & totalGroup
+        panel.BorderStyle = BorderStyle.Fixed3D
+        panel.Width = panelGroup1.Width
+        panel.Height = panelGroup1.Height
+        panel.Font = panelGroup1.Font
+
+        Dim label As Label = New Label
+        label.Name = "lblGroupName" & totalGroup
+        label.Text = "Group Name"
+        label.Location = New Point(lblGroupName1.Location.X, panel.Location.Y)
+        label.Width = lblGroupName1.Width
+        label.Height = lblGroupName1.Height
+        label.Font = lblGroupName1.Font
+        label.Dock = lblGroupName1.Dock
+
+        Dim textbox As TextBox = New TextBox
+        textbox.Name = "txtGroupName" & totalGroup
+        textbox.Width = txtGroupName1.Width
+        textbox.Height = txtGroupName1.Height
+        'textbox.Location = New Point(txtGroupName1.Location.X, panel.Location.Y)
+        textbox.Dock = txtGroupName1.Dock
+
+        panelGroupName.Controls.Add(textbox)
+        panelGroupName.Controls.Add(label)
+
+        Dim listbox As ListBox = New ListBox
+        listbox.AllowDrop = True
+        listbox.Name = "lstSelection" & totalGroup
+        listbox.Width = lstSelection1.Width
+        listbox.Height = lstSelection1.Height
+        listbox.Location = New Point(lstSelection1.Location.X, label.Location.Y + (lstSelection1.Location.Y - lblGroupName1.Location.Y))
+        listbox.Font = lstSelection1.Font
+
+        AddHandler listbox.DragEnter, AddressOf ListBox_DragEnter
+        AddHandler listbox.DragDrop, AddressOf ListBox_DragDrop
+        AddHandler listbox.MouseDown, AddressOf ListBox_MouseDown
+
+        panel.Controls.Add(panelGroupName)
+        'panel.Controls.Add(label)
+        'panel.Controls.Add(textbox)
+        panel.Controls.Add(listbox)
+
+        Me.flowLayoutGroup.Controls.Add(panel)
+    End Sub
+
+    Private Sub btnAdd_Click(sender As Object, e As EventArgs) Handles btnAdd.Click
+        AddMoreGroup()
+        selectedSubCatArray.Add(New List(Of FacilityTypeSubCategory))
+        flowLayoutGroup.Controls(flowLayoutGroup.Controls.Count - 1).Focus()
+    End Sub
+
+    Private Sub lstvSubCategory_ItemSelectionChanged(sender As Object, e As ListViewItemSelectionChangedEventArgs) Handles lstvSubCategory.ItemSelectionChanged
+        If e.Item.BackColor = Color.Yellow Then
+            e.Item.Selected = False
+        End If
+    End Sub
+
+    '======================== PROGRESS PANEL ==============================================================
+    Private Delegate Sub getDataDelegate()
+    Private Delegate Sub showWorkingDelegate()
+    Private Delegate Sub hideWorkingDelegate()
+    Private WithEvents workerProgress As New System.ComponentModel.BackgroundWorker
+    Private WithEvents workerGetData As New System.ComponentModel.BackgroundWorker
+    Private dtSubCat As DataTable
+    Private dtPrevGroups As DataTable
+
+
+    Private Sub workerProgress_DoWork(sender As Object, e As System.ComponentModel.DoWorkEventArgs) Handles workerProgress.DoWork
+        Invoke(New showWorkingDelegate(AddressOf ShowWorking))
+    End Sub
+
+    Private Sub workerGetData_GetSubCat_DoWork(sender As Object, e As System.ComponentModel.DoWorkEventArgs)
+        'Invoke(New getDataDelegate(AddressOf GetData))
+        GetSubCategories()
+    End Sub
+
+    Private Sub workerGetData_GetPrevious_RunWorkerCompleted(sender As Object, e As System.ComponentModel.RunWorkerCompletedEventArgs)
+        Invoke(New hideWorkingDelegate(AddressOf HideWorkingAfterLoadPrevious))
+        RemoveHandler workerGetData.DoWork, AddressOf workerGetData_GetPrevious_DoWork
+        RemoveHandler workerGetData.RunWorkerCompleted, AddressOf workerGetData_GetPrevious_RunWorkerCompleted
+    End Sub
+
+    Private Sub workerGetData_GetPrevious_DoWork(sender As Object, e As System.ComponentModel.DoWorkEventArgs)
+        GetDataForPrevious()
+    End Sub
+
+    Private Sub workerGetData_GetSubCat_RunWorkerCompleted(sender As Object, e As System.ComponentModel.RunWorkerCompletedEventArgs)
+        Invoke(New hideWorkingDelegate(AddressOf HideWorkingAfterSubCategories))
+        RemoveHandler workerGetData.DoWork, AddressOf workerGetData_GetSubCat_DoWork
+        RemoveHandler workerGetData.RunWorkerCompleted, AddressOf workerGetData_GetSubCat_RunWorkerCompleted
+    End Sub
+
+    Private Sub GetSubCategories()
+
+        Dim cmdSelect As New SqlClient.SqlCommand
+        With cmdSelect
+            .CommandText = "spSSPSTFacilityTypePercent"
+            .CommandType = CommandType.StoredProcedure
+            .Connection = MobClassLib.MobilityData.MobilityConnection
+            .CommandTimeout = 0
+        End With
+
+        With cmdSelect.Parameters
+            .AddWithValue("@PlanID", planID)
+            .AddWithValue("@GroupID", node.GroupID) ' IIf(node.GroupID = -1, 0, node.GroupID))
+            .AddWithValue("@FacilityTypeID", selectedFacilityTypeID)
+            .AddWithValue("@PreviousWhereClause", Me.queryString)
+            .AddWithValue("@IsEdit", editLevel)
+        End With
+
+        If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+            MobClassLib.MobilityData.MobilityConnection.Open()
+        End If
+
+        Dim mydataReader As SqlDataReader
+        mydataReader = cmdSelect.ExecuteReader()
+        Dim tempdataTable As New DataTable()
+        tempdataTable.Load(mydataReader)
+        Dim dv As DataView = tempdataTable.DefaultView
+        If selectedFacilityTypeID = 5 Then
+
+        Else
+            dv.Sort = "SubCategory asc"
+        End If
+
+        dtSubCat = New DataTable()
+        dtSubCat = dv.ToTable
+
+        MobClassLib.MobilityData.MobilityConnection.Close()
+
+
+    End Sub
+
+    Private Sub ShowWorking(Optional message As String = "")
+        Dim working_display As New Panel
+        'panelForms.Hide()
+        working_display.Name = "working_display"
+
+        Me.Controls.Add(working_display)
+
+        Dim img As New PictureBox
+        img.Image = My.Resources.spinner3_greenie
+        img.Size = New Size(36, 36)
+        img.Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
+
+
+        Dim lbl As New Label
+
+        With lbl
+            If message.Length > 0 Then .Text = message Else .Text = "Retrieving Records..."
+            .Font = New Font("Tahoma", 12)
+            .Width = CType(Math.Ceiling(CType(Me.CreateGraphics.MeasureString(lbl.Text, lbl.Font).Width, Decimal)), Integer)
+            .Anchor = AnchorStyles.Bottom Or AnchorStyles.Right
+        End With
+
+
+        With working_display
+            .Visible = True
+            .Controls.Add(img)
+            .Controls.Add(lbl)
+
+            .Size = New Size(Me.Width, Me.Height)
+            .Anchor = AnchorStyles.Bottom Or AnchorStyles.Right Or AnchorStyles.Left Or AnchorStyles.Top
+
+            .BringToFront()
+        End With
+
+        img.Location = New Point(CInt(Width / 2 - 18), CInt(Height / 2 - 18))
+        lbl.Location = New Point(CInt(Width / 2 - lbl.Width / 2), CInt(Height / 2 - 18 - lbl.Height))
+
+        working_display.Show()
+    End Sub
+
+    Private Sub HideWorkingAfterSubCategories()
+        Dim ctl As Control() = Me.Controls.Find("working_display", False)
+
+        For Each c As Control In ctl
+            c.Dispose()
+            c = Nothing
+        Next
+
+        lstvSubCategory.Items.Clear()
+
+        For Each dr As DataRow In dtSubCat.Rows
+            Dim childNode As New ListViewItem(dr("SubCategory").ToString() & " - " & dr("Result").ToString() & " (" & Format((CType((CType(dr("Result").ToString(), Integer) / CType(totalCrash, Integer)), Decimal) * 100), "0.00") & "%)")
+            Dim subCategory As New FacilityTypeSubCategory(CType(dr("SubCategoryID").ToString(), Integer), dr("SubCategory").ToString(), dr("SourceColumn").ToString())
+            subCategory.SubCatValue = dr("SubCatValue").ToString()
+            subCategory.FacilityTypeID = CType(dr("FacilityTypeID").ToString(), Integer)
+            childNode.Tag = subCategory
+            lstvSubCategory.Items.Add(childNode)
+        Next
+
+        For i As Integer = 1 To flowLayoutGroup.Controls.Count - 1
+            flowLayoutGroup.Controls.RemoveAt(i)
+        Next
+
+        txtGroupName1.Clear()
+        lstSelection1.Items.Clear()
+        selectedSubCategory.Clear()
+        selectedSubCatArray.RemoveRange(1, selectedSubCatArray.Count - 1)
+
+        totalGroup = 1
+    End Sub
+
+    Private Sub HideWorkingAfterLoadPrevious()
+        Dim ctl As Control() = Me.Controls.Find("working_display", False)
+
+        For Each c As Control In ctl
+            c.Dispose()
+            c = Nothing
+        Next
+
+        lstvSubCategory.Items.Clear()
+
+        For Each dr As DataRow In dtSubCat.Rows
+            'Dim childNode As New ListViewItem(dr("SubCategory").ToString() & " - " & dr("Result").ToString() & " (" & Format((CType((CType(dr("Result").ToString(), Integer) / CType(totalCrash, Integer)), Decimal) * 100), "0.00") & "%)")
+            If CInt(totalCrash) > 0 Then
+                Dim childNode As New ListViewItem(dr("SubCategory").ToString() & " - " & dr("Result").ToString() & " (" & Format((CType((CType(dr("Result").ToString(), Integer) / CType(totalCrash, Integer)), Decimal) * 100), "0.00") & "%)")
+                Dim subCategory As New FacilityTypeSubCategory(CType(dr("SubCategoryID").ToString(), Integer), dr("SubCategory").ToString(), dr("SourceColumn").ToString())
+                subCategory.SubCatValue = dr("SubCatValue").ToString()
+                subCategory.FacilityTypeID = CType(dr("FacilityTypeID").ToString(), Integer)
+                childNode.Tag = subCategory
+                lstvSubCategory.Items.Add(childNode)
+            End If
+            
+        Next
+
+        For i As Integer = 1 To flowLayoutGroup.Controls.Count - 1
+            flowLayoutGroup.Controls.RemoveAt(i)
+        Next
+
+        txtGroupName1.Clear()
+        lstSelection1.Items.Clear()
+        selectedSubCategory.Clear()
+        selectedSubCatArray.RemoveRange(1, selectedSubCatArray.Count - 1)
+
+        If dtPrevGroups.Rows.Count > 0 Then
+            cbFacilityType.Enabled = False
+            Dim dv As New DataView(dtPrevGroups)
+            dv.Sort = "ChildGroupID,GroupSubCategoryID"
+            Dim distinctChildGroupID As DataTable = dv.ToTable(True, New String() {"ChildGroupID", "GroupName"})
+
+            Dim firstPass As Boolean = True
+
+            For Each row As DataRow In distinctChildGroupID.Rows
+                If firstPass Then
+                    firstPass = False
+                    txtGroupName1.Text = row("GroupName").ToString
+                    lstSelection1.Tag = row("ChildGroupID").ToString
+                Else
+                    firstPass = False
+                    btnAddNewGroup_Click(Nothing, Nothing)
+                    CType(flowLayoutGroup.Controls.Find("txtGroupName" & totalGroup.ToString, True)(0), TextBox).Text = row("GroupName").ToString
+                    CType(flowLayoutGroup.Controls.Find("lstSelection" & totalGroup.ToString, True)(0), ListBox).Tag = row("ChildGroupID").ToString
+                End If
+
+                dv.RowFilter = "ChildGroupID=" & row("ChildGroupID").ToString
+
+                For Each drv As DataRowView In dv
+                    For Each n As ListViewItem In lstvSubCategory.Items
+                        If n.Tag IsNot Nothing AndAlso TypeOf (n.Tag) Is FacilityTypeSubCategory Then
+                            If CType(n.Tag, FacilityTypeSubCategory).SubCategoryID = CType(drv("SubCategoryID"), Integer) Then m_tnSource = n
+                        End If
+                    Next
+
+                    If m_tnSource IsNot Nothing AndAlso Not m_tnSource.BackColor = Color.Yellow Then
+                        Dim lst As ListBox = CType(flowLayoutGroup.Controls.Find("lstSelection" & totalGroup.ToString, True)(0), ListBox)
+                        If Not m_tnSource Is Nothing Then
+                            Dim subCategory As FacilityTypeSubCategory = CType(m_tnSource.Tag, FacilityTypeSubCategory)
+                            lst.DisplayMember = "SubCategory"
+                            lst.Items.Add(subCategory)
+                            selectedSubCatArray.Item(flowLayoutGroup.Controls.IndexOf(lst.Parent)).Add(subCategory)
+                            m_tnSource.BackColor = Color.Yellow
+
+                        End If
+                    End If
+                    m_tnSource = Nothing
+                Next
+            Next
+        End If
+    End Sub
+
+    Private Sub GetDataForPrevious()
+        Dim cmd As New SqlCommand
+        With cmd
+            .CommandText = "spSSPSTFacilityTypeAddEditGet"
+            .CommandType = CommandType.StoredProcedure
+            .Connection = MobilityConnection
+            .Parameters.AddWithValue("@GroupID", node.GroupID)
+
+        End With
+
+        If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+            MobClassLib.MobilityData.MobilityConnection.Open()
+        End If
+
+        Dim mydataReader As SqlDataReader
+        mydataReader = cmd.ExecuteReader()
+        Dim tempdataTable As New DataTable()
+
+        dtPrevGroups = New DataTable
+        dtPrevGroups.Load(mydataReader)
+
+        MobClassLib.MobilityData.MobilityConnection.Close()
+
+        If dtPrevGroups.Rows.Count > 0 Then
+            selectedFacilityTypeID = CInt(dtPrevGroups.Rows(0)("FacilityTypeID").ToString)
+
+            Dim cmdSelect As New SqlClient.SqlCommand
+            With cmdSelect
+                .CommandText = "spSSPSTFacilityTypePercent"
+                .CommandType = CommandType.StoredProcedure
+                .Connection = MobClassLib.MobilityData.MobilityConnection
+                .CommandTimeout = 0
+            End With
+
+            With cmdSelect.Parameters
+                .AddWithValue("@PlanID", planID)
+                .AddWithValue("@GroupID", node.GroupID) ' IIf(node.GroupID = -1, 0, node.GroupID))
+                .AddWithValue("@FacilityTypeID", selectedFacilityTypeID)
+                .AddWithValue("@PreviousWhereClause", Me.queryString)
+                .AddWithValue("@IsEdit", editLevel)
+            End With
+
+            If Not MobClassLib.MobilityData.MobilityConnection.State = ConnectionState.Open Then
+                MobClassLib.MobilityData.MobilityConnection.Open()
+            End If
+
+            'Dim mydataReader As SqlDataReader
+            mydataReader = cmdSelect.ExecuteReader()
+            'Dim tempdataTable As New DataTable()
+            tempdataTable.Load(mydataReader)
+            Dim dv As DataView = tempdataTable.DefaultView
+            If selectedFacilityTypeID = 5 Then
+
+            Else
+                dv.Sort = "SubCategory asc"
+            End If
+
+            dtSubCat = New DataTable()
+            dtSubCat = dv.ToTable
+
+            MobClassLib.MobilityData.MobilityConnection.Close()
+        End If
+    End Sub
+
+
+  
+   
+End Class
